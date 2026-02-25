@@ -25,7 +25,8 @@
                 <div id="qrDisplay" class="hidden">
                     <p>Show this QR to sender's phone</p>
                     <div class="qr-container">
-                        <img id="sessionQr" src="" alt="Session QR Code">
+                        <div id="qrLoading" class="loading-spinner"></div>
+                        <img id="sessionQr" src="" alt="Session QR Code" style="display:none;" onload="this.style.display='block';document.getElementById('qrLoading').style.display='none';">
                     </div>
                     <p class="hint">Or sender can enter this URL manually</p>
                     <p class="session-url" id="sessionUrl"></p>
@@ -55,9 +56,43 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="/static/js/main.js"></script>
     <script>
-        const socket = io();
+        const socket = io({
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 10
+        });
+        
+        addConnectionStatusHandlers(socket);
+        
         let sessionId = '{{ session_id }}' || null;
         let filesToReceive = [];
+        
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+        });
+        
+        // Check session validity periodically
+        let sessionCheckInterval;
+        function startSessionCheck() {
+            sessionCheckInterval = setInterval(async () => {
+                if (sessionId) {
+                    try {
+                        const response = await fetch(`/api/check-session/${sessionId}`);
+                        if (!response.ok) {
+                            const container = document.querySelector('.content');
+                            container.innerHTML = '<div class="error-message">Session expired. Please refresh the page or go home to start a new session.</div>';
+                            clearInterval(sessionCheckInterval);
+                        }
+                    } catch (err) {
+                        console.error('Session check failed:', err);
+                    }
+                }
+            }, 30000);
+        }
         
         // PC receiving: create session and show QR
         if (!sessionId || sessionId === 'None' || sessionId === '') {
@@ -65,9 +100,23 @@
                 const btn = document.getElementById('createSessionBtn');
                 btn.disabled = true;
                 btn.textContent = 'Creating...';
+                removeErrors();
                 
                 try {
-                    const response = await fetch('/api/create-receive-session', { method: 'POST' });
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 10000);
+                    
+                    const response = await fetch('/api/create-receive-session', { 
+                        method: 'POST',
+                        signal: controller.signal
+                    });
+                    
+                    clearTimeout(timeoutId);
+                    
+                    if (!response.ok) {
+                        throw new Error('Failed to create session');
+                    }
+                    
                     const data = await response.json();
                     
                     // Store the session_id for later use
@@ -80,15 +129,20 @@
                     
                     // Join the session room for updates
                     socket.emit('pair_request', { session_id: sessionId });
+                    startSessionCheck();
                 } catch (err) {
-                    alert('Error creating session');
+                    console.error('Error:', err);
                     btn.disabled = false;
+                    btn.textContent = 'Retry';
+                    const container = document.querySelector('.content');
+                    container.appendChild(showError('Failed to create session. Please try again.'));
                 }
             });
         } 
         // Phone sending to this PC: existing flow
         else {
             socket.emit('pair_request', { session_id: sessionId });
+            startSessionCheck();
         }
         
         socket.on('receiver_ready', (data) => {
@@ -112,6 +166,12 @@
         
         socket.on('transfer_complete', (data) => {
             showComplete();
+        });
+        
+        socket.on('error', (data) => {
+            console.error('Socket error:', data);
+            const container = document.querySelector('.content');
+            container.appendChild(showError(data.message || 'An error occurred'));
         });
         
         function displayFiles(files) {
@@ -146,7 +206,15 @@
         async function downloadFile(file) {
             try {
                 const encodedName = encodeURIComponent(file.name);
-                const response = await fetch(`/download/${sessionId}/${encodedName}`);
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout
+                
+                const response = await fetch(`/download/${sessionId}/${encodedName}`, {
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
                 if (!response.ok) {
                     console.error('Download failed:', response.status);
                     return { name: file.name, verified: false, error: response.status };
@@ -195,6 +263,9 @@
                 return { name: file.name, verified: true };
             } catch (err) {
                 console.error('Error downloading:', file.name, err);
+                if (err.name === 'AbortError') {
+                    return { name: file.name, verified: false, error: 'Download timed out' };
+                }
                 return { name: file.name, verified: false, error: err.message };
             }
         }

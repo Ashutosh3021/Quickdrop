@@ -40,7 +40,9 @@
             </div>
             
             <div id="qrSection" class="qr-section hidden">
-                <img id="qrCode" src="" alt="QR Code">
+                <div class="qr-container">
+                    <img id="qrCode" src="" alt="QR Code">
+                </div>
                 <p>Receiver, scan this QR code or open the URL</p>
             </div>
             
@@ -64,10 +66,44 @@
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
     <script src="/static/js/main.js"></script>
     <script>
-        const socket = io();
+        const socket = io({
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionAttempts: 10
+        });
+        
+        addConnectionStatusHandlers(socket);
+        
         const isSender = true;
         let currentSessionId = '{{ session_id }}' || null;
         let selectedFilesList = [];
+        
+        socket.on('connect', () => {
+            console.log('Connected to server');
+        });
+        
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            showStatus('Connection lost. Reconnecting...', true);
+        });
+        
+        // Check session validity periodically
+        let sessionCheckInterval;
+        function startSessionCheck() {
+            sessionCheckInterval = setInterval(async () => {
+                if (currentSessionId) {
+                    try {
+                        const response = await fetch(`/api/check-session/${currentSessionId}`);
+                        if (!response.ok) {
+                            showStatus('Session expired. Please refresh the page.', true);
+                            clearInterval(sessionCheckInterval);
+                        }
+                    } catch (err) {
+                        console.error('Session check failed:', err);
+                    }
+                }
+            }, 30000); // Check every 30 seconds
+        }
         
         // If session_id in URL, this is phone → PC flow
         if (currentSessionId && currentSessionId !== 'None' && currentSessionId !== '') {
@@ -75,6 +111,7 @@
             document.getElementById('createSessionBtn').textContent = 'Prepare & Send Files';
             currentSessionId = currentSessionId.trim();
             socket.emit('pair_request', { session_id: currentSessionId });
+            startSessionCheck();
         }
         
         document.getElementById('fileInput').addEventListener('change', handleFileSelect);
@@ -108,16 +145,23 @@
             const btn = document.getElementById('createSessionBtn');
             btn.disabled = true;
             btn.textContent = 'Preparing...';
+            removeErrors();
             
             try {
                 if (currentSessionId) {
                     formData.append('session_id', currentSessionId);
                 }
                 
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000);
+                
                 const response = await fetch('/api/create-session', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
+                
+                clearTimeout(timeoutId);
                 
                 if (!response.ok) {
                     throw new Error('Server error: ' + response.status);
@@ -176,12 +220,15 @@
             showStatus('Error: ' + (data.message || 'Unknown error'));
         });
         
-        function showStatus(msg) {
+        function showStatus(msg, isError = false) {
             const section = document.getElementById('statusSection');
             if (section) {
                 section.classList.remove('hidden');
                 const msgEl = document.getElementById('statusMessage');
-                if (msgEl) msgEl.textContent = msg;
+                if (msgEl) {
+                    msgEl.textContent = msg;
+                    msgEl.className = isError ? 'status-message error' : 'status-message';
+                }
             }
         }
         

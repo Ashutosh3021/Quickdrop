@@ -135,13 +135,21 @@ def qr_code(session_id):
 def get_session_api(session_id):
     session = get_session(session_id)
     if not session:
-        return jsonify({'error': 'Session not found or expired'}), 404
+        return jsonify({'error': 'Session expired or not found', 'code': 'SESSION_EXPIRED'}), 404
     
     return jsonify({
         'id': session['id'],
         'state': session['state'],
         'files': [{'name': k, 'size': v['size'], 'checksum': v['checksum']} for k, v in session['files'].items()]
     })
+
+
+@app.route('/api/check-session/<session_id>')
+def check_session(session_id):
+    session = get_session(session_id)
+    if not session:
+        return jsonify({'valid': False, 'error': 'Session expired'}), 404
+    return jsonify({'valid': True})
 
 
 @app.route('/download/<session_id>/<filename>')
