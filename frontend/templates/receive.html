@@ -56,7 +56,7 @@
     <script src="/static/js/main.js"></script>
     <script>
         const socket = io();
-        const sessionId = '{{ session_id }}';
+        let sessionId = '{{ session_id }}' || null;
         let filesToReceive = [];
         
         // PC receiving: create session and show QR
@@ -70,13 +70,16 @@
                     const response = await fetch('/api/create-receive-session', { method: 'POST' });
                     const data = await response.json();
                     
+                    // Store the session_id for later use
+                    sessionId = data.session_id;
+                    
                     document.getElementById('sessionQr').src = data.qr_url;
                     document.getElementById('sessionUrl').textContent = data.share_url;
                     document.getElementById('waitingMessage').classList.add('hidden');
                     document.getElementById('qrDisplay').classList.remove('hidden');
                     
                     // Join the session room for updates
-                    socket.emit('pair_request', { session_id: data.session_id });
+                    socket.emit('pair_request', { session_id: sessionId });
                 } catch (err) {
                     alert('Error creating session');
                     btn.disabled = false;
