@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="description" content="MultiShare - Send Files">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/png" href="/icons/icon-192.png">
+    <title>Send Files - MultiShare</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <a href="/" class="back-link">← Back</a>
+            <h1>📤 Send Files</h1>
+        </header>
+        
+        <div class="content">
+            <div class="file-picker-section">
+                <input type="file" id="fileInput" multiple class="file-input">
+                <label for="fileInput" class="file-label">
+                    <span class="icon">📁</span>
+                    <span>Choose Files</span>
+                </label>
+            </div>
+            
+            <div id="selectedFiles" class="file-list"></div>
+            
+            <button id="createSessionBtn" class="btn btn-primary" disabled>Create Share Link</button>
+            
+            <div id="shareSection" class="share-section hidden">
+                <p>Share this URL with receiver:</p>
+                <div class="share-url">
+                    <input type="text" id="shareUrl" readonly>
+                    <button id="copyBtn" class="btn-small">Copy</button>
+                </div>
+                <p class="hint">Or scan the QR code on receiver's device</p>
+            </div>
+            
+            <div id="qrSection" class="qr-section hidden">
+                <img id="qrCode" src="" alt="QR Code">
+                <p>Receiver, scan this QR code or open the URL</p>
+            </div>
+            
+            <div id="statusSection" class="status-section hidden">
+                <div class="status-message" id="statusMessage"></div>
+                <button id="sendFilesBtn" class="btn btn-primary hidden">Send Files Now</button>
+                <div id="progressContainer" class="progress-container hidden">
+                    <div class="progress-bar">
+                        <div id="progressBar" class="progress-fill"></div>
+                    </div>
+                    <div class="progress-info">
+                        <span id="progressText">0%</span>
+                        <span id="speedText">0 MB/s</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+    <script src="/static/js/main.js"></script>
+    <script>
+        const socket = io();
+        const isSender = true;
+        let currentSessionId = '{{ session_id }}' || null;
+        let selectedFilesList = [];
+        
+        // If session_id in URL, this is phone → PC flow
+        if (currentSessionId && currentSessionId !== 'None' && currentSessionId !== '') {
+            document.querySelector('h1').textContent = '📤 Send to PC';
+            document.getElementById('createSessionBtn').textContent = 'Prepare & Send Files';
+            currentSessionId = currentSessionId.trim();
+            socket.emit('pair_request', { session_id: currentSessionId });
+        }
+        
+        document.getElementById('fileInput').addEventListener('change', handleFileSelect);
+        document.getElementById('createSessionBtn').addEventListener('click', createSession);
+        document.getElementById('copyBtn').addEventListener('click', copyShareUrl);
+        document.getElementById('sendFilesBtn').addEventListener('click', confirmAndSend);
+        
+        function handleFileSelect(e) {
+            const files = e.target.files;
+            selectedFilesList = Array.from(files);
+            displaySelectedFiles();
+            document.getElementById('createSessionBtn').disabled = files.length === 0;
+            
+            // For phone → PC flow, show send button immediately after file selection
+            if (currentSessionId && files.length > 0) {
+                showStatus('Click "Prepare & Send Files" to send to PC');
+            }
+        }
+        
+        function displaySelectedFiles() {
+            const container = document.getElementById('selectedFiles');
+            container.innerHTML = selectedFilesList.map(f => 
+                `<div class="file-item">${f.name} <span class="file-size">(${formatSize(f.size)})</span></div>`
+            ).join('');
+        }
+        
+        async function createSession() {
+            const formData = new FormData();
+            selectedFilesList.forEach(f => formData.append('files', f));
+            
+            const btn = document.getElementById('createSessionBtn');
+            btn.disabled = true;
+            btn.textContent = 'Preparing...';
+            
+            try {
+                if (currentSessionId) {
+                    formData.append('session_id', currentSessionId);
+                }
+                
+                const response = await fetch('/api/create-session', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Server error: ' + response.status);
+                }
+                
+                const data = await response.json();
+                
+                if (!data.session_id) {
+                    throw new Error('No session ID returned');
+                }
+                
+                currentSessionId = data.session_id;
+                
+                if (data.share_url) {
+                    document.getElementById('shareUrl').value = data.share_url;
+                    document.getElementById('shareSection').classList.remove('hidden');
+                    document.getElementById('qrSection').classList.remove('hidden');
+                    document.getElementById('qrCode').src = `/api/qr/${currentSessionId}`;
+                    btn.textContent = 'Link Created!';
+                    socket.emit('pair_request', { session_id: currentSessionId });
+                } else {
+                    btn.textContent = 'Sending...';
+                    socket.emit('sender_confirm', { session_id: currentSessionId });
+                }
+            } catch (err) {
+                console.error('Error:', err);
+                btn.disabled = false;
+                btn.textContent = currentSessionId ? 'Prepare & Send Files' : 'Create Share Link';
+                alert('Error: ' + err.message);
+            }
+        }
+        
+        function copyShareUrl() {
+            const input = document.getElementById('shareUrl');
+            input.select();
+            document.execCommand('copy');
+            document.getElementById('copyBtn').textContent = 'Copied!';
+            setTimeout(() => document.getElementById('copyBtn').textContent = 'Copy', 2000);
+        }
+        
+        socket.on('receiver_ready', (data) => {
+            showStatus('Receiver connected! Click "Send Files Now" to transfer.');
+            document.getElementById('sendFilesBtn').classList.remove('hidden');
+        });
+        
+        socket.on('transfer_progress', (data) => {
+            updateProgress(data);
+        });
+        
+        socket.on('transfer_complete', (data) => {
+            showStatus('Transfer complete! ✅');
+            document.getElementById('progressContainer').classList.add('hidden');
+        });
+        
+        socket.on('error', (data) => {
+            showStatus('Error: ' + (data.message || 'Unknown error'));
+        });
+        
+        function showStatus(msg) {
+            const section = document.getElementById('statusSection');
+            if (section) {
+                section.classList.remove('hidden');
+                const msgEl = document.getElementById('statusMessage');
+                if (msgEl) msgEl.textContent = msg;
+            }
+        }
+        
+        function updateProgress(data) {
+            const container = document.getElementById('progressContainer');
+            if (!container) return;
+            container.classList.remove('hidden');
+            const percent = Math.round((data.bytes_received / data.total_bytes) * 100);
+            const bar = document.getElementById('progressBar');
+            if (bar) bar.style.width = percent + '%';
+            const text = document.getElementById('progressText');
+            if (text) text.textContent = `${data.filename}: ${percent}%`;
+            const speed = document.getElementById('speedText');
+            if (speed) speed.textContent = (data.speed_mbps || 0).toFixed(1) + ' MB/s';
+        }
+        
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+        
+        function confirmAndSend() {
+            socket.emit('sender_confirm', { session_id: currentSessionId });
+            document.getElementById('sendFilesBtn').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>

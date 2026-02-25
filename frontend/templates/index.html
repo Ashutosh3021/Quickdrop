@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="description" content="MultiShare - Local File Share App">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/png" href="/icons/icon-192.png">
+    <title>MultiShare</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📡 MultiShare</h1>
+            <p class="subtitle">Local File Transfer</p>
+        </header>
+        
+        <div class="ip-display">
+            <span>Your IP: {{ ip }}:{{ port }}</span>
+        </div>
+        
+        <div class="actions">
+            <a href="/send" class="btn btn-send">
+                <span class="icon">📤</span>
+                <span class="label">SEND FILES</span>
+            </a>
+            <a href="/receive" class="btn btn-receive">
+                <span class="icon">📥</span>
+                <span class="label">RECEIVE FILES</span>
+            </a>
+        </div>
+        
+        <footer>
+            <p>Transfer files locally over WiFi</p>
+            <p>No internet required • No account needed</p>
+        </footer>
+    </div>
+    
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js');
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#16a34a">
+    <meta name="description" content="MultiShare - Receive Files">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/png" href="/icons/icon-192.png">
+    <title>Receive Files - MultiShare</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <a href="/" class="back-link">← Back</a>
+            <h1>📥 Receive Files</h1>
+        </header>
+        
+        <div class="content">
+            <div id="qrSection" class="qr-section">
+                <div id="waitingMessage">
+                    <button id="createSessionBtn" class="btn btn-success">Generate QR Code</button>
+                </div>
+                <div id="qrDisplay" class="hidden">
+                    <p>Show this QR to sender's phone</p>
+                    <div class="qr-container">
+                        <img id="sessionQr" src="" alt="Session QR Code">
+                    </div>
+                    <p class="hint">Or sender can enter this URL manually</p>
+                    <p class="session-url" id="sessionUrl"></p>
+                </div>
+            </div>
+            
+            <div id="statusSection" class="status-section hidden">
+                <div class="status-message" id="statusMessage"></div>
+            </div>
+            
+            <div id="filesSection" class="files-section hidden">
+                <h2>Files to receive</h2>
+                <div id="fileList" class="file-list"></div>
+            </div>
+            
+            <div id="progressSection" class="progress-section hidden">
+                <h2>Download Progress</h2>
+                <div id="progressContainer" class="progress-container"></div>
+            </div>
+            
+            <div id="completeSection" class="complete-section hidden">
+                <div class="success-message">✅ All files received!</div>
+            </div>
+        </div>
+    </div>
+    
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="/static/js/main.js"></script>
+    <script>
+        const socket = io();
+        const sessionId = '{{ session_id }}';
+        let filesToReceive = [];
+        
+        // PC receiving: create session and show QR
+        if (!sessionId || sessionId === 'None' || sessionId === '') {
+            document.getElementById('createSessionBtn').addEventListener('click', async () => {
+                const btn = document.getElementById('createSessionBtn');
+                btn.disabled = true;
+                btn.textContent = 'Creating...';
+                
+                try {
+                    const response = await fetch('/api/create-receive-session', { method: 'POST' });
+                    const data = await response.json();
+                    
+                    document.getElementById('sessionQr').src = data.qr_url;
+                    document.getElementById('sessionUrl').textContent = data.share_url;
+                    document.getElementById('waitingMessage').classList.add('hidden');
+                    document.getElementById('qrDisplay').classList.remove('hidden');
+                    
+                    // Join the session room for updates
+                    socket.emit('pair_request', { session_id: data.session_id });
+                } catch (err) {
+                    alert('Error creating session');
+                    btn.disabled = false;
+                }
+            });
+        } 
+        // Phone sending to this PC: existing flow
+        else {
+            socket.emit('pair_request', { session_id: sessionId });
+        }
+        
+        socket.on('receiver_ready', (data) => {
+            const msg = document.getElementById('waitingMessage') || document.getElementById('qrDisplay');
+            if (msg) msg.innerHTML = '<p>✅ Connected! Waiting for files...</p>';
+        });
+        
+        socket.on('transfer_starting', (data) => {
+            filesToReceive = data.files;
+            displayFiles(filesToReceive);
+            const filesSection = document.getElementById('filesSection');
+            const waitingMsg = document.getElementById('waitingMessage');
+            if (filesSection) filesSection.classList.remove('hidden');
+            if (waitingMsg) waitingMsg.innerHTML = '<p>⬇️ Starting download...</p>';
+            startReceiving();
+        });
+        
+        socket.on('transfer_progress', (data) => {
+            updateFileProgress(data);
+        });
+        
+        socket.on('transfer_complete', (data) => {
+            showComplete();
+        });
+        
+        function displayFiles(files) {
+            const container = document.getElementById('fileList');
+            if (!container) return;
+            container.innerHTML = files.map(f => `
+                <div class="file-item" id="file-${f.name}">
+                    <div class="file-name">${f.name}</div>
+                    <div class="file-size">${formatSize(f.size)}</div>
+                    <div class="file-progress">
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progress-${f.name}"></div>
+                        </div>
+                        <span class="progress-text" id="text-${f.name}">0%</span>
+                    </div>
+                </div>
+            `).join('');
+        }
+        
+        async function startReceiving() {
+            const progressSection = document.getElementById('progressSection');
+            const filesSection = document.getElementById('filesSection');
+            if (progressSection) progressSection.classList.remove('hidden');
+            if (filesSection) filesSection.classList.add('hidden');
+            
+            const downloads = filesToReceive.map(file => downloadFile(file));
+            await Promise.all(downloads);
+            
+            socket.emit('transfer_complete', { session_id: sessionId });
+        }
+        
+        async function downloadFile(file) {
+            try {
+                const encodedName = encodeURIComponent(file.name);
+                const response = await fetch(`/download/${sessionId}/${encodedName}`);
+                if (!response.ok) {
+                    console.error('Download failed:', response.status);
+                    return { name: file.name, verified: false, error: response.status };
+                }
+                
+                const reader = response.body.getReader();
+                const fileSize = file.size;
+                let received = 0;
+                const startTime = Date.now();
+                const chunks = [];
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    chunks.push(value);
+                    received += value.length;
+                    
+                    const elapsed = (Date.now() - startTime) / 1000;
+                    const speed = elapsed > 0 ? (received / (1024 * 1024)) / elapsed : 0;
+                    
+                    const percent = Math.round((received / fileSize) * 100);
+                    const progressBar = document.getElementById(`progress-${file.name}`);
+                    const progressText = document.getElementById(`text-${file.name}`);
+                    if (progressBar) progressBar.style.width = percent + '%';
+                    if (progressText) progressText.textContent = percent + '%';
+                    
+                    socket.emit('transfer_progress', {
+                        session_id: sessionId,
+                        filename: file.name,
+                        bytes_received: received,
+                        total_bytes: fileSize,
+                        speed_mbps: speed
+                    });
+                }
+                
+                const blob = new Blob(chunks);
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = file.name;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                return { name: file.name, verified: true };
+            } catch (err) {
+                console.error('Error downloading:', file.name, err);
+                return { name: file.name, verified: false, error: err.message };
+            }
+        }
+        
+        function updateFileProgress(data) {
+            const percent = Math.round((data.bytes_received / data.total_bytes) * 100);
+            const progressBar = document.getElementById(`progress-${data.filename}`);
+            const progressText = document.getElementById(`text-${data.filename}`);
+            if (progressBar) progressBar.style.width = percent + '%';
+            if (progressText) progressText.textContent = percent + '%';
+        }
+        
+        function showComplete() {
+            const progressSection = document.getElementById('progressSection');
+            const completeSection = document.getElementById('completeSection');
+            const statusSection = document.getElementById('statusSection');
+            if (progressSection) progressSection.classList.add('hidden');
+            if (completeSection) completeSection.classList.remove('hidden');
+            if (statusSection) statusSection.classList.add('hidden');
+        }
+        
+        function formatSize(bytes) {
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+    </script>
+</body>
+</html>
